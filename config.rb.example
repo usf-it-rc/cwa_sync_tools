@@ -1,0 +1,11 @@
+require 'cwa_config'
+
+CwaConfig.config do |c|
+  c.msg_url     = 'https://message.example.com'
+  c.msg_user    = 'msghttpuser'
+  c.msg_pass    = 'msghttppassword'
+  c.msg_aes_key = 'msgaeskey'
+  c.ipa_url     = 'https://ipa.example.com/ipa/json'
+  c.ipa_user    = 'ipasvcacct'
+  c.ipa_pass    = 'ipasvcacctpassword'
+end
