@@ -41,15 +41,15 @@ response['result']['result'].each do |r|
 
   # home directory
   if !File.directory?(home_dir) && home_dir =~ /^\/home\/[a-z]{1}\/.*$/
-    Dir.mkdir(home_dir, 0700)
-    FileUtils.cp_r("/etc/skel/", home_dir)
+    FileUtils.mkdir_p(home_dir, :mode => 0700)
+    FileUtils.cp_r("/etc/skel/.", home_dir)
     FileUtils.chown_R(uid, uid, home_dir)
     FileUtils.chmod_R("o-rwx", home_dir)
   end
 
   # work directory
   if !File.directory?(work_dir) && work_dir =~ /^\/work\/[a-z]{1}\/.*$/
-    Dir.mkdir(work_dir, 0700)
-    File.chown(uid, uid, work_dir)
+    FileUtils.mkdir_p(work_dir, :mode => 0700)
+    FileUtils.chown(uid, uid, work_dir)
   end
 end
