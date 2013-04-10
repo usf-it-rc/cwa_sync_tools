@@ -2,3 +2,4 @@ config.rb
 pwexpupdate.sh
 pwtest.rb
 pwset.rb
+Gemfile.lock
