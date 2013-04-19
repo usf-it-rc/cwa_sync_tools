@@ -8,4 +8,10 @@ CwaConfig.config do |c|
   c.ipa_url     = 'https://ipa.example.com/ipa/json'
   c.ipa_user    = 'ipasvcacct'
   c.ipa_pass    = 'ipasvcacctpassword'
+  c.redmine_db_user = 'redminedbuser'
+  c.redmine_db_pass = 'something'
+  c.redmine_db_host = 'dbhost'
+  c.arco_db_user = 'arcodbuser'
+  c.arco_db_pass = 'something'
+  c.arco_db_host = 'dbhost'
 end

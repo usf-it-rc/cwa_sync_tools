@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+# Execute arguments under RVM environment for cron
+#
+
+if [ -f /usr/local/rvm/scripts/rvm ]; then
+  source /usr/local/rvm/scripts/rvm
+fi
+
+if [ -f $HOME/.rvm/scripts/rvm ]; then
+  source $HOME/.rvm/scripts/rvm
+fi
+
+if [ -x $1 ]; then
+  cd $(dirname $1)
+  exe=$(basename $1)
+  shift
+  ./$exe $@ >> $HOME/.$exe.log
+else
+  echo "Cannot execute $1"
+  exit -1
+fi
