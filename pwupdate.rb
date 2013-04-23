@@ -57,7 +57,7 @@ messages.each do |m|
   end
 
   # Force password expiry update
-  pwexp = `/usr/local/account_sync_tools/pwexpupdate.sh #{m[:msg]['netid']}`
+  pwexp = `./pwexpupdate.sh #{m[:msg]['netid']}`
   if $?.success?
     puts Time.now.to_s + " pwupdate.rb :: User password expiry updated. " + pwexp.chomp
   else
