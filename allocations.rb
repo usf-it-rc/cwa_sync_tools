@@ -17,7 +17,8 @@ require './config.rb'
 
 sge_list = Array.new
 sge_list = SGElist.new("defaultAllocations").listclean.split(/\s+/)  # We'll supply a listname for now
-sge_list = sge_list.length <= 10 ? sge_list = sge_list.drop(9) : sge_list = sge_list.drop(10)
+sge_list.delete_if { |x| x == "DEPT" }
+sge_list.drop(9)
 
 dbstr = "dbname=redmine user=#{CwaConfig.redmine_db_user} password=#{CwaConfig.redmine_db_pass} host=#{CwaConfig.redmine_db_host}"
 
