@@ -6,7 +6,9 @@
 #
 # Comments kept for debugging purposes.
 #
-# John DeSantis desantis@mail.usf.edu 
+# John DeSantis desantis@mail.usf.edu
+#
+# Added Hash, extra DB call - John DeSantis 04/22/2013
 
 require 'pg'
 require 'rcqacct'
@@ -19,46 +21,68 @@ sge_list = sge_list.length <= 10 ? sge_list = sge_list.drop(9) : sge_list = sge_
 
 dbstr = "dbname=redmine user=#{CwaConfig.redmine_db_user} password=#{CwaConfig.redmine_db_pass} host=#{CwaConfig.redmine_db_host}"
 
+userdets = Hash.new
+userids = String.new
+
+# Populate Hashes with initial data 
 dbconn = PG::Connection.open(dbstr)
-rows = 0
-t_query = dbconn.query('select user_id,used_hours,time_in_hours,approved,last_reported_hours,allocation_finished from cwa_allocations')
+t_query = dbconn.exec("select user_id,used_hours,time_in_hours,approved,last_reported_hours from cwa_allocations where user_id > 10000")
 t_query.values.each do |i|
-  unless i[0].to_i <= 500
-    user_id,used_hours,time_in_hours,approved,last_reported_hours,allocation_finished = Rcqacct.new(i[0].to_i),i[1].to_i,i[2].to_i,i[3],i[4].to_i,i[5]
-    if used_hours < time_in_hours && approved == "t"
-      unless sge_list.include?(user_id.uname)
-        ## puts "test 1 match: #{user_id.uname}. Adding to defaultAllocations"
-        user_id.listadd = "defaultAllocations" 
-      end
+  user = Rcqacct.new(i[0].chomp)
+  userids += "'#{user.uname}',"
+  used_hours,time_in_hours,approved,last_reported_hours = i[1].to_i,i[2].to_i,i[3],i[4].to_i
+  userdets.store(user.uname,{"uid"=>"#{i[0].chomp}","used_hours"=>"#{i[1].chomp}","time_in_hours"=>"#{i[2].chomp}","approved"=>"#{i[3].chomp}","last_reported_hours"=>"#{i[4].chomp}","arco_hours"=>"0"}) 
+end
+dbarco = PG::Connection.open("dbname=arco user=#{CwaConfig.arco_db_user} password=#{CwaConfig.arco_db_pass} host=#{CwaConfig.arco_db_host}")
+t_query = dbarco.exec("select cpu_time,owner from view_user_cputime where owner in (#{userids.chop})")
+t_query.values.each do |i|
+  userdets[i[1]]["arco_hours"] = ((i[0].chomp.to_i / 60) / 60)
+end
+dbarco.close
+
+# Process statistics
+rows = 0
+userdets.each_key do |uid|
+  if userdets[uid]["used_hours"].to_i < userdets[uid]["time_in_hours"].to_i && userdets[uid]["approved"] == "t"
+    unless sge_list.include?(uid)
+      puts "Adding #{uid} to defaultAllocations userset list."
+      Rcqacct.new(uid).listadd = "defaultAllocations"
     end
-    if used_hours == 0 && last_reported_hours == 0
-      ## puts "test2 match: #{user_id.uname}"
-      u_query = dbconn.exec("update cwa_allocations set (used_hours,last_reported_hours) = ('#{user_id.cputime}','#{user_id.cputime}') where user_id = '#{i[0]}'")
-      rows += u_query.cmd_tuples
-    elsif used_hours == 0 && last_reported_hours > 0
-      ## puts "test3: #{user_id.uname}, used hours must be set to hours reported by qacct/arco minus last_reported_hours"
-      ## puts t_var = (user_id.cputime - last_reported_hours)
-      u_query = dbconn.exec("update cwa_allocations set used_hours = '#{t_var}' where user_id = '#{i[0]}'")
+  end
+  if userdets[uid]["used_hours"].to_i == 0 && userdets[uid]["last_reported_hours"].to_i == 0
+    #puts "test2 match: #{uid}"
+    u_query = dbconn.exec("update cwa_allocations set (used_hours,last_reported_hours) = ('#{userdets[uid]["arco_hours"]}','#{userdets[uid]["arco_hours"]}') where user_id = '#{userdets[uid]["uid"]}'")
+    rows += u_query.cmd_tuples
+  elsif userdets[uid]["used_hours"].to_i == 0 && userdets[uid]["last_reported_hours"].to_i > 0
+    #puts "test3: #{uid}, used hours must be set to hours reported by qacct/arco minus last_reported_hours"
+    t_var = (userdets[uid]["arco_hours"].to_i - userdets[uid]["last_reported_hours"].to_i)
+    u_query = dbconn.exec("update cwa_allocations set used_hours = '#{t_var}' where user_id = '#{userdets[uid]["uid"]}'")
+    rows += u_query.cmdtuples
+  end
+  if userdets[uid]["used_hours"].to_i > 0 && userdets[uid]["last_reported_hours"].to_i == 0
+    # must update used_hours table to used_hours + arco
+    t_var = (userdets[uid]["used_hours"].to_i + userdets[uid]["arco_hours"])
+    u_query = dbconn.exec("update cwa_allocations set used_hours = '#{t_var}' where user_id = '#{userdets[uid]["uid"]}'")
+    u_query = dbconn.exec("update cwa_allocations set last_reported_hours = '#{userdets[uid]["arco_hours"]}' where user_id = '#{userdets[uid]["uid"]}'")
+    rows += u_query.cmdtuples
+  elsif userdets[uid]["used_hours"].to_i >= 0 && userdets[uid]["last_reported_hours"].to_i >= 0 
+    #puts "test 4 match: #{user_id.uname} - set used_hours to ((sge - last_reported_hours) + used_hours)"
+    unless userdets[uid]["last_reported_hours"].to_i == userdets[uid]["arco_hours"].to_i
+      #puts "#{uid} has used additional cputime this run. last hours reported: #{userdets[uid]["last_reported_hours"]} cputime: #{userdets[uid]["arco_hours"]}"
+      t_var = ( (userdets[uid]["arco_hours"].to_i - userdets[uid]["last_reported_hours"].to_i) + userdets[uid]["used_hours"].to_i)
+      u_query = dbconn.exec("update cwa_allocations set used_hours = '#{t_var}' where user_id = '#{userdets[uid]["uid"]}'")
+      u_query = dbconn.exec("update cwa_allocations set last_reported_hours = '#{userdets[uid]["arco_hours"]}' where user_id = '#{userdets[uid]["uid"]}'")
       rows += u_query.cmdtuples
-    elsif used_hours > 0 && last_reported_hours > 0 
-      ## puts "test 4 match: #{user_id.uname} - set used_hours to ((sge - last_reported_hours) + used_hours)"
-      unless last_reported_hours == user_id.cputime
-        ## puts "#{user_id.uname} has not used cputime this run. last hours reported: #{last_reported_hours} cputime: #{user_id.cputime}"
-        t_var = ( (user_id.cputime - last_reported_hours) + used_hours)
-        u_query = dbconn.exec("update cwa_allocations set used_hours = '#{t_var}' where user_id = '#{i[0]}'")
-        u_query = dbconn.exec("update cwa_allocations set last_reported_hours = '#{user_id.cputime}' where user_id = '#{i[0]}'")
-        rows += u_query.cmdtuples
-      end
     end
-    if used_hours >= time_in_hours && approved == "t"
-      if sge_list.include?(user_id.uname)
-        ## puts "test5 match: remove #{user_id.uname} from defaultAllocations user list and allocation_finished must be set to current timestamp"
-        user_id.listdel = "defaultAllocations"
-        u_query = dbconn.exec("update cwa_allocations set allocation_finished = current_timestamp where user_id = '#{i[0]}'")
-        rows += u_query.cmdtuples
-      end
+  end
+  if userdets[uid]["used_hours"].to_i >= userdets[uid]["time_in_hours"].to_i && userdets[uid]["approved"] == "t"
+    if sge_list.include?(uid)
+      puts "Removing #{uid} from defaultAllocations userset list and setting allocation_finished to current timestamp."
+      Rcqacct.new(uid).listdel = "defaultAllocations"
+      u_query = dbconn.exec("update cwa_allocations set allocation_finished = current_timestamp where user_id = '#{userdets[uid]["uid"]}'")
+      rows += u_query.cmdtuples
     end
   end
 end
-puts "total rows affected: #{rows}" unless rows == 0
 dbconn.close
+puts "Total rows: #{rows}"
