@@ -69,7 +69,7 @@ file_systems.each do |x|
   if x.split(/ /)[1] =~ /xfs/
     tmp = File.open("/tmp/xfs_details.txt","w+")
     $stdout = tmp
-    i = IO.popen("xfs_quota -x -c \"quot -un -b\" #{x.split(/ /)[0]}","w+")
+    i = IO.popen("/usr/sbin/xfs_quota -x -c \"quot -un -b\" #{x.split(/ /)[0]}","w+")
     puts i.readlines
     i.close
   end
