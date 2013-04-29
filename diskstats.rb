@@ -1,70 +1,123 @@
 #!/usr/bin/env ruby
+# 
+# Cron script to update disk usage statistics
+# per CWA user.
+#
+# John DeSantis desantis@mail.usf.edu 04/29/2013
 
-require './config.rb'
 require 'pg'
+require './config.rb'
 
-pg_conn = "dbname=redmine user=#{CwaConfig.redmine_db_user} password=#{CwaConfig.redmine_db_pass} host=#{CwaConfig.redmine_db_host}"
+# Database details
+dbstr = "dbname=redmine user=#{CwaConfig.redmine_db_user} password=#{CwaConfig.redmine_db_pass} host=#{CwaConfig.redmine_db_host}" 
 
-# Rudimentary run in progress check
-if File.exists?("/var/run/disk_tally.tmp")
-  puts "run in progress..."
-  exit
-end
+# File systems to check. Separate with pipe.
+fs = "work|home"
+ftype = Regexp.new(fs)
 
 # Processing Structures
+old_out = $stdout
 stats = Hash.new
-xfs_quota = Array.new
+file_systems = Array.new
+proctemp = Array.new
+coltemp = Array.new
+tnum = 0
+rows = 0
 
-# Since getting work file system stats can take
-# a UID as an argument, we want all UID's first
-# from the DB
-system("touch /var/run/disk_tally.tmp")
-dbconn = PG::Connection.open(pg_conn)
+# Get file system details
+# and process data
+tmp = IO.popen("cat /etc/mtab","r")
+proctemp += tmp.readlines
+tmp.close
+proctemp.select do |i|
+  if i =~ ftype
+    # sunrpc /var/lib/nfs/rpc_pipefs rpc_pipefs rw 0 0
+    i.match(/^\S+\s(\S+)\s(\S+)/)
+    file_systems.push "#{$1} #{$2}" 
+  end
+end
+proctemp.clear
+
+# Build our Hash using the UID as the primary key
+# and then iterate over specified file systems as sub keys.
+dbconn = PG::Connection.open(dbstr)
+fs.split("|").each do |fst|
+  c_query = dbconn.exec("select column_name from information_schema.columns where table_name = 'cwa_user_metrics' and column_name like '%#{fst}%'")
+  c_query.values.each do |dbc|
+    coltemp[tnum] = Array.new
+    coltemp[tnum].push fst, dbc[0]
+  end
+  tnum += 1
+end
 u_query = dbconn.exec("select id from users where id > 10000")
 u_query.values.each do |i|
-  stats.store(i[0],{})
+  uid = i[0].chomp
+  unless stats.has_key?(uid)
+    stats[uid] = Hash.new
+  end
+  file_systems.each do |j|
+    unless stats[uid].has_key?(j.split(/ /)[0])
+      stats[uid][j.split(/ /)[0]] = 0
+    end
+  end
 end
 dbconn.close
 
-# Start with /work since it's faster
-# and populate our base hash
-stats.each_key do |user|
-  i = IO.popen("lfs quota -u #{user} /work | awk '/^Disk/ { printf \"%s:\", $5 } \/\\/work\/ { print $2 }'","r")
-  uid,size = i.readlines.to_s.gsub(/\[|"|\\n|\]/,'').split(":")[0..1]
-  if size == "4"
-    stats.store(uid,{"work"=>"0","home"=>""})
-  else
-    size = size.to_f
-    stats.store(uid,{"work"=>((size/1024)/1024),"home"=>""})
+# XFS in use?  If so, a temporary file should be created
+# for parsing in data due to processing time(s)
+file_systems.each do |x|
+  if x.split(/ /)[1] =~ /xfs/
+    tmp = File.open("/tmp/xfs_details.txt","w+")
+    $stdout = tmp
+    i = IO.popen("xfs_quota -x -c \"quot -un -b\" #{x.split(/ /)[0]}","w+")
+    puts i.readlines
+    i.close
+  end
+end
+$stdout = old_out
+
+# Iterate over file systems and populate Hashes
+file_systems.each do |x|
+  mpoint = x.split(/ /)[0]
+  type = x.split(/ /)[1]
+  if type == "lustre"
+    stats.each_key do |uid|
+      tmp = IO.popen("lfs quota -u #{uid} #{mpoint}")
+      proctemp += tmp.readlines
+      tmp.close
+      proctemp = proctemp.drop(2)
+      stats[uid][mpoint] = ((proctemp[0].to_s.strip.split(/ /)[1].to_f / 1024) / 1024)
+      proctemp.clear
+    end
+  end
+  if type == "xfs"
+    File.open("/tmp/xfs_details.txt","r").each do |tfile|
+      unless tfile =~ /^[^0-9 ]/
+        size = ((tfile.strip.split(/\s+/)[0].to_f / 1024) / 1024)
+        user = tfile.strip.split(/\s+/)[1].gsub("#",'').chomp
+        if stats.has_key?(user)
+          stats[user][mpoint] = size
+        end
+      end
+    end
   end
 end
 
-# Move on to /home
-i = IO.popen("/usr/sbin/xfs_quota -x -c \"quot -un -b\" /export/home","r")
-  xfs_quota += i.readlines
-i.close
-
-# Process xfs_stats
-xfs_quota.each do |line|
-  size,user = line.chomp.gsub(/\s+/,'').split("#")[0..1]
-  if stats.has_key?(user)
-    size = size.to_f
-    stats[user]["home"] = ((size/1024)/1024)
-  end
-end
-
-## Re-establish DB connection to populate fields
-rows = 0
-dbconn = PG::Connection.open(pg_conn)
+# Re-establish DB connection and populate proper columns
+dbconn = PG::Connection.open(dbstr)
 stats.each_key do |uid|
-  unless stats[uid]["home"].to_s == ""
-    u_query = dbconn.exec("update cwa_user_metrics set (disk_usage_home,disk_usage_work) = ('#{stats[uid]["home"]}','#{stats[uid]["work"]}') where user_id = '#{uid}'")
-    rows += u_query.cmdtuples()
-  else
-    u_query = dbconn.exec("update cwa_user_metrics set (disk_usage_home,disk_usage_work) = ('0.00','#{stats[uid]["work"]}') where user_id = '#{uid}'")
-    rows += u_query.cmdtuples()
+  stats[uid].each_key do |mp|
+    mp.match(/^.*\W(.*)$/)
+    for i in 0...coltemp.length 
+      if coltemp[i][0] == $1 
+        #puts "uid: #{uid} fs: #{mp} size: #{stats[uid][mp]} dbcol: #{coltemp[i][1]}"
+        u_query = dbconn.exec("update cwa_user_metrics set #{coltemp[i][1]} = '#{stats[uid][mp]}' where user_id = '#{uid}'")
+        rows += u_query.cmdtuples()
+      end
+    end
   end
 end
+dbconn.close
 
-puts "Total rows: #{rows}"
-system("rm /var/run/disk_tally.tmp")
+puts "Total table updates: #{rows}"
+system("rm /tmp/xfs_details.txt")
